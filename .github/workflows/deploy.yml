@@ -1,0 +1,147 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches:
+      - prod
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "Serverless stage to deploy (defaults to prod)"
+        required: false
+        default: prod
+        type: string
+
+# Required for the OIDC auth flow with AWS:
+#   - id-token: write   → lets the runner mint a GitHub OIDC token
+#   - contents: read    → checkout the repo
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  # Avoid two simultaneous deploys of the same stage racing on CloudFormation.
+  group: deploy-${{ github.event.inputs.stage || 'prod' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy backend + frontend
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.stage || 'prod' }}
+    env:
+      STAGE: ${{ github.event.inputs.stage || 'prod' }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      STACK_NAME: serverless-dashboard-${{ github.event.inputs.stage || 'prod' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install backend npm deps
+        working-directory: backend
+        run: npm ci
+
+      - name: Install Serverless Framework globally
+        run: npm install -g serverless@3
+
+      - name: Deploy backend stack
+        working-directory: backend
+        env:
+          # Required by serverless.yml; if unset the stack falls back to
+          # the publicly-known default and the webhook is wide open.
+          WEBHOOK_API_KEY: ${{ secrets.WEBHOOK_API_KEY }}
+        run: |
+          if [ -z "$WEBHOOK_API_KEY" ]; then
+            echo "::error::WEBHOOK_API_KEY secret is not set for environment '$STAGE'"
+            exit 1
+          fi
+          serverless deploy --stage "$STAGE" --region "$AWS_REGION" --verbose
+
+      - name: Read CloudFormation outputs
+        id: outputs
+        run: |
+          set -euo pipefail
+          read_output() {
+            aws cloudformation describe-stacks \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
+              --output text
+          }
+          API_URL=$(read_output HttpApiUrl)
+          BUCKET=$(read_output FrontendBucketName)
+          DIST_ID=$(read_output FrontendDistributionId)
+          DIST_DOMAIN=$(read_output FrontendDistributionDomain)
+          USER_POOL_ID=$(read_output UserPoolId)
+          USER_POOL_CLIENT_ID=$(read_output UserPoolClientId)
+
+          for var in API_URL BUCKET DIST_ID DIST_DOMAIN USER_POOL_ID USER_POOL_CLIENT_ID; do
+            if [ -z "${!var}" ] || [ "${!var}" = "None" ]; then
+              echo "::error::CloudFormation output '$var' is empty"
+              exit 1
+            fi
+          done
+
+          {
+            echo "api_url=$API_URL"
+            echo "bucket=$BUCKET"
+            echo "dist_id=$DIST_ID"
+            echo "dist_domain=$DIST_DOMAIN"
+            echo "user_pool_id=$USER_POOL_ID"
+            echo "user_pool_client_id=$USER_POOL_CLIENT_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install frontend npm deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: ${{ steps.outputs.outputs.api_url }}
+        run: npm run build
+
+      - name: Sync frontend to S3
+        run: |
+          aws s3 sync frontend/dist/ "s3://${{ steps.outputs.outputs.bucket }}/" \
+            --delete \
+            --region "$AWS_REGION"
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ steps.outputs.outputs.dist_id }}" \
+            --paths "/*"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Deploy complete"
+            echo ""
+            echo "| Resource | Value |"
+            echo "| --- | --- |"
+            echo "| Stage | \`$STAGE\` |"
+            echo "| Region | \`$AWS_REGION\` |"
+            echo "| API base URL | \`${{ steps.outputs.outputs.api_url }}\` |"
+            echo "| Frontend bucket | \`${{ steps.outputs.outputs.bucket }}\` |"
+            echo "| CloudFront distribution | \`${{ steps.outputs.outputs.dist_id }}\` |"
+            echo "| Frontend URL | https://${{ steps.outputs.outputs.dist_domain }} |"
+            echo "| Cognito User Pool | \`${{ steps.outputs.outputs.user_pool_id }}\` |"
+            echo "| Cognito App Client | \`${{ steps.outputs.outputs.user_pool_client_id }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

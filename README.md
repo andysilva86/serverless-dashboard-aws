@@ -121,6 +121,68 @@ aws cloudfront create-invalidation \
 
 A SPA fica disponível em `https://<FrontendDistributionDomain>`.
 
+## Deploy automático em push para `prod`
+
+O workflow [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+faz `serverless deploy`, build do frontend, `aws s3 sync` para o bucket e
+invalidação do CloudFront a cada push na branch `prod` (ou via
+`workflow_dispatch`). Autenticação na AWS é feita por **OIDC**, sem
+guardar `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` em segredo do GitHub.
+
+### 1. Bootstrap one-time da confiança AWS ↔ GitHub
+
+A stack [`bootstrap/github-oidc.yml`](./bootstrap/github-oidc.yml) cria o
+provedor OIDC e uma role IAM com `sts:AssumeRoleWithWebIdentity` restrito
+ao seu repo + branch.
+
+```bash
+aws cloudformation deploy \
+  --stack-name serverless-dashboard-github-oidc \
+  --template-file bootstrap/github-oidc.yml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+      GitHubOrg=andysilva86 \
+      RepoName=serverless-dashboard-aws \
+      DeployBranch=prod
+# Se sua conta já tem o OIDC provider para token.actions.githubusercontent.com,
+# adicione: CreateOIDCProvider=false
+```
+
+Pegue o `DeployRoleArn` do output:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name serverless-dashboard-github-oidc \
+  --query "Stacks[0].Outputs[?OutputKey=='DeployRoleArn'].OutputValue" \
+  --output text
+```
+
+### 2. Configure o repositório no GitHub
+
+Em **Settings → Secrets and variables → Actions** crie:
+
+| Tipo | Nome | Valor |
+| --- | --- | --- |
+| Secret | `AWS_DEPLOY_ROLE_ARN` | ARN do output acima |
+| Secret | `WEBHOOK_API_KEY` | string forte (use `openssl rand -hex 32`) |
+| Variable (opcional) | `AWS_REGION` | região da deploy (default `us-east-1`) |
+
+> Recomendado: criar um **Environment** chamado `prod` em **Settings → Environments**
+> e exigir aprovação manual antes do deploy. O workflow já está configurado com
+> `environment: prod`, então as protections (required reviewers, wait timer,
+> deployment branches) entram automaticamente.
+
+### 3. Deploy
+
+```bash
+git checkout -b prod
+git push -u origin prod
+```
+
+Cada push subsequente para `prod` re-deploya backend + frontend. Para
+fazer um deploy manual de qualquer branch, use **Actions → Deploy to AWS
+→ Run workflow**.
+
 ### Confirmar usuário criado pela tela de cadastro
 
 O Cognito User Pool é criado com `AutoVerifiedAttributes: email`, mas o e-mail
