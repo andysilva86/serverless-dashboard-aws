@@ -6,7 +6,6 @@ import json
 import os
 
 import boto3
-
 from handlers.auth import login, register
 
 

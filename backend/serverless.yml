@@ -97,24 +97,30 @@ package:
     - "!.venv/**"
     - "!.pytest_cache/**"
     - "!.ruff_cache/**"
+    - "!.coverage"
+    - "!pyproject.toml"
+    - "!node_modules/**"
+    - "!package.json"
+    - "!package-lock.json"
+    - "!.serverless/**"
 
 functions:
   authRegister:
-    handler: src/handlers/auth/register.handler
+    handler: handlers/auth/register.handler
     events:
       - httpApi:
           method: POST
           path: /auth/register
 
   authLogin:
-    handler: src/handlers/auth/login.handler
+    handler: handlers/auth/login.handler
     events:
       - httpApi:
           method: POST
           path: /auth/login
 
   usersMe:
-    handler: src/handlers/users/me.handler
+    handler: handlers/users/me.handler
     events:
       - httpApi:
           method: GET
@@ -123,7 +129,7 @@ functions:
             name: cognitoJwt
 
   dashboardStats:
-    handler: src/handlers/dashboard/stats.handler
+    handler: handlers/dashboard/stats.handler
     events:
       - httpApi:
           method: GET
@@ -132,14 +138,14 @@ functions:
             name: cognitoJwt
 
   integrationsWebhook:
-    handler: src/handlers/integrations/webhook.handler
+    handler: handlers/integrations/webhook.handler
     events:
       - httpApi:
           method: POST
           path: /integrations/webhook
 
   integrationsDispatch:
-    handler: src/handlers/integrations/dispatch.handler
+    handler: handlers/integrations/dispatch.handler
     events:
       - httpApi:
           method: POST
