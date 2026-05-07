@@ -21,8 +21,13 @@ from typing import Any
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 TABLE_NAME_ENV = "TABLE_NAME"
+# Default cap for the dashboard event aggregation. Tuned to keep p99 query
+# cost bounded; clients receive ``truncated=True`` when this cap is hit.
+DEFAULT_STATS_MAX_ITEMS = 1000
+_QUERY_PAGE_LIMIT = 100
 
 
 @lru_cache(maxsize=1)
@@ -50,7 +55,22 @@ def event_sk(iso_ts: str, *, suffix: str | None = None) -> str:
     return f"EVENT#{iso_ts}#{suffix}"
 
 
-def put_user_profile(sub: str, *, email: str, name: str | None = None) -> dict[str, Any]:
+def put_user_profile(
+    sub: str,
+    *,
+    email: str,
+    name: str | None = None,
+    if_not_exists: bool = False,
+) -> dict[str, Any]:
+    """Upsert (or create-if-absent) the profile row for ``sub``.
+
+    When ``if_not_exists=True`` we attach an ``attribute_not_exists(PK)``
+    condition so concurrent lazy-create paths (e.g. two simultaneous
+    ``GET /users/me`` requests for a user whose profile row was never
+    written) can't race-overwrite each other's ``createdAt``. On a
+    conditional check failure we fall back to returning the existing
+    profile so callers always receive a well-formed item.
+    """
     table = get_table()
     item: dict[str, Any] = {
         "PK": user_pk(sub),
@@ -61,7 +81,20 @@ def put_user_profile(sub: str, *, email: str, name: str | None = None) -> dict[s
         "name": name or "",
         "createdAt": now_iso(),
     }
-    table.put_item(Item=item)
+    kwargs: dict[str, Any] = {"Item": item}
+    if if_not_exists:
+        kwargs["ConditionExpression"] = "attribute_not_exists(PK)"
+    try:
+        table.put_item(**kwargs)
+    except ClientError as exc:
+        if (
+            if_not_exists
+            and exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException"
+        ):
+            existing = get_user_profile(sub)
+            if existing is not None:
+                return existing
+        raise
     return item
 
 
@@ -100,14 +133,48 @@ def list_events(sub: str, *, limit: int = 50) -> list[dict[str, Any]]:
     return [dict(item) for item in res.get("Items", [])]
 
 
-def stats_for_user(sub: str) -> dict[str, Any]:
-    events = list_events(sub, limit=200)
+def stats_for_user(sub: str, *, max_items: int = DEFAULT_STATS_MAX_ITEMS) -> dict[str, Any]:
+    """Aggregate event metrics for ``sub`` across paginated DynamoDB queries.
+
+    The previous implementation silently capped at 200 events, which made
+    ``totalEvents`` and ``byType`` undercount for active users. We now page
+    through up to ``max_items`` events and surface a ``truncated`` flag so
+    consumers can tell when the response is an approximation rather than
+    a full count.
+    """
+    table = get_table()
     by_type: dict[str, int] = {}
-    for event in events:
-        key = str(event.get("eventType", "unknown"))
-        by_type[key] = by_type.get(key, 0) + 1
+    latest_event: dict[str, Any] | None = None
+    total = 0
+    last_key: dict[str, Any] | None = None
+    truncated = False
+
+    while total < max_items:
+        params: dict[str, Any] = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": user_pk(sub), ":sk": "EVENT#"},
+            "ScanIndexForward": False,
+            "Limit": min(_QUERY_PAGE_LIMIT, max_items - total),
+        }
+        if last_key is not None:
+            params["ExclusiveStartKey"] = last_key
+        res = table.query(**params)
+        for item in res.get("Items", []):
+            total += 1
+            event_type = str(item.get("eventType", "unknown"))
+            by_type[event_type] = by_type.get(event_type, 0) + 1
+            if latest_event is None:
+                latest_event = dict(item)
+        last_key = res.get("LastEvaluatedKey")
+        if last_key is None:
+            break
+    else:
+        # Hit ``max_items`` while DynamoDB still has more pages to give us.
+        truncated = last_key is not None
+
     return {
-        "totalEvents": len(events),
+        "totalEvents": total,
         "byType": by_type,
-        "latestEvent": events[0] if events else None,
+        "latestEvent": latest_event,
+        "truncated": truncated,
     }

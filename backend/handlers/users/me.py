@@ -22,7 +22,7 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         claims = claims_from_event(event)
         email = str(claims.get("email") or "")
         name = str(claims.get("name") or "")
-        profile = db.put_user_profile(sub, email=email, name=name)
+        profile = db.put_user_profile(sub, email=email, name=name, if_not_exists=True)
 
     return responses.ok(
         {

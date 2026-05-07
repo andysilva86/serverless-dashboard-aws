@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from handlers.integrations import webhook
 
 from .conftest import WEBHOOK_API_KEY
@@ -70,3 +71,21 @@ def test_webhook_data_must_be_object(dynamo_table: None) -> None:
         None,
     )
     assert res["statusCode"] == 400
+
+
+def test_webhook_returns_500_when_api_key_env_missing(
+    dynamo_table: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``WEBHOOK_API_KEY`` is unset, ``require_api_key`` raises
+    ``RuntimeError``. The handler must catch that and return a structured
+    500 (with CORS headers and a JSON body) instead of crashing the Lambda
+    with an unhandled exception."""
+    monkeypatch.delenv("WEBHOOK_API_KEY", raising=False)
+    res = webhook.handler(
+        make_event({"userSub": "sub-1", "eventType": "ping"}, api_key="anything"),
+        None,
+    )
+    assert res["statusCode"] == 500
+    assert res["headers"]["Content-Type"] == "application/json"
+    body = json.loads(res["body"])
+    assert body["error"] == "internal_error"
