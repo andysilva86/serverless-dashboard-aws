@@ -22,6 +22,12 @@ def handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         require_api_key(event)
     except PermissionError:
         return responses.unauthorized("invalid api key")
+    except RuntimeError:
+        # ``WEBHOOK_API_KEY`` is missing in the Lambda environment. Raising
+        # here would surface as a raw 500 without CORS headers or a JSON
+        # body; return a structured error instead and log loudly.
+        logger.exception("webhook misconfigured: WEBHOOK_API_KEY env var is not set")
+        return responses.server_error("webhook misconfigured")
 
     try:
         body = json.loads(event.get("body") or "{}")

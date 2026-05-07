@@ -7,7 +7,7 @@ from typing import Any
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-API-Key",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
 }
 
