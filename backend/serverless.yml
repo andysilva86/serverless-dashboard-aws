@@ -318,5 +318,8 @@ resources:
       Value: !Ref AppEventBus
     FrontendBucketName:
       Value: !Ref FrontendBucket
+    FrontendDistributionId:
+      Description: CloudFront distribution ID — used by CI to invalidate the cache after a frontend sync
+      Value: !Ref FrontendDistribution
     FrontendDistributionDomain:
       Value: !GetAtt FrontendDistribution.DomainName
