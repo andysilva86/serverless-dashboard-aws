@@ -13,7 +13,6 @@ from functools import lru_cache
 from typing import Any
 
 import boto3
-
 from lib import db, responses
 from lib.auth import require_sub
 from lib.logging import get_logger

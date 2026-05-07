@@ -6,7 +6,6 @@ import json
 from typing import Any
 
 from botocore.exceptions import ClientError
-
 from lib import db, responses
 from lib.auth import cognito_client, get_user_pool_client_id
 from lib.logging import get_logger

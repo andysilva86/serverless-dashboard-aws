@@ -19,11 +19,13 @@ com diagrama PNG e diagramas de sequência em Mermaid.
 
 ```
 .
-├── backend/                Lambdas Python + testes (pytest, moto)
-│   ├── pyproject.toml
-│   ├── src/
-│   │   ├── handlers/       Um arquivo por endpoint (auth, users, dashboard, integrations)
-│   │   └── lib/            Helpers de DynamoDB, autenticação, respostas, logging
+├── backend/                Lambdas Python + IaC + testes (pytest, moto)
+│   ├── pyproject.toml      Dependências do projeto Python
+│   ├── requirements.txt    Dependências de runtime empacotadas pelo serverless-python-requirements
+│   ├── package.json        serverless + plugin de python requirements
+│   ├── serverless.yml      Cognito + API + Lambdas + DynamoDB + S3 + CloudFront + EventBridge
+│   ├── handlers/           Um arquivo por endpoint (auth, users, dashboard, integrations)
+│   ├── lib/                Helpers de DynamoDB, autenticação, respostas, logging
 │   └── tests/              Testes pytest com mocks via moto
 ├── frontend/               SPA React + Vite + TypeScript
 │   ├── src/
@@ -32,9 +34,6 @@ com diagrama PNG e diagramas de sequência em Mermaid.
 │   │   ├── api/            Cliente HTTP tipado
 │   │   └── components/     Layout, PrivateRoute
 │   └── package.json
-├── infrastructure/         Serverless Framework
-│   ├── serverless.yml      Cognito + API + Lambdas + DynamoDB + S3 + CloudFront + EventBridge
-│   └── package.json        serverless + plugin de python requirements
 ├── docs/
 │   ├── architecture.md     Documentação detalhada
 │   ├── architecture-diagram.py  Script para gerar o PNG (lib `diagrams`)
@@ -72,7 +71,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 
 # Lint + testes
-ruff check src tests
+ruff check handlers lib tests
 pytest
 ```
 
@@ -87,10 +86,13 @@ npm run typecheck
 npm run dev   # http://localhost:5173
 ```
 
-### Infraestrutura
+### Serverless Framework (npm)
+
+O `serverless.yml` e o plugin `serverless-python-requirements` ficam dentro de `backend/`
+(o plugin precisa do `requirements.txt` ao lado do `serverless.yml` para empacotar as deps).
 
 ```bash
-cd infrastructure
+cd backend
 npm install
 cp .env.example .env  # defina WEBHOOK_API_KEY
 ```
@@ -98,8 +100,8 @@ cp .env.example .env  # defina WEBHOOK_API_KEY
 ## Deploy completo
 
 ```bash
-# 1. Backend + recursos AWS
-cd infrastructure
+# 1. Backend + recursos AWS (rodar de dentro de backend/)
+cd backend
 npx serverless deploy --stage dev
 
 # Pegue os outputs (HttpApiUrl, UserPoolId, UserPoolClientId, FrontendBucketName, FrontendDistributionDomain)
@@ -143,7 +145,7 @@ curl -X POST "<HttpApiUrl>/integrations/webhook" \
 ## Remover stack
 
 ```bash
-cd infrastructure
+cd backend
 npx serverless remove --stage dev
 ```
 
