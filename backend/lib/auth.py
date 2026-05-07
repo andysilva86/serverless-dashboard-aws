@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 from functools import lru_cache
 from typing import Any
@@ -50,11 +51,16 @@ def require_sub(event: dict[str, Any]) -> str:
 
 
 def require_api_key(event: dict[str, Any]) -> None:
-    """Validate the inbound webhook API key shared with external systems."""
+    """Validate the inbound webhook API key shared with external systems.
+
+    Uses :func:`hmac.compare_digest` so the comparison runs in constant time,
+    preventing timing oracles that would let an attacker recover the secret
+    one character at a time.
+    """
     expected = os.environ.get("WEBHOOK_API_KEY")
     if not expected:
         raise RuntimeError("WEBHOOK_API_KEY is not configured")
     headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
     provided = headers.get("x-api-key")
-    if provided != expected:
+    if not provided or not hmac.compare_digest(provided, expected):
         raise PermissionError("invalid api key")

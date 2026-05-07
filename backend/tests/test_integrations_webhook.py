@@ -36,6 +36,24 @@ def test_webhook_rejects_invalid_api_key(dynamo_table: None) -> None:
     assert res["statusCode"] == 401
 
 
+def test_webhook_rejects_missing_api_key(dynamo_table: None) -> None:
+    res = webhook.handler(
+        make_event({"userSub": "sub-1", "eventType": "ping"}, api_key=None),
+        None,
+    )
+    assert res["statusCode"] == 401
+
+
+def test_webhook_rejects_api_key_of_different_length(dynamo_table: None) -> None:
+    """`hmac.compare_digest` raises TypeError on bytes-vs-str mismatches but
+    accepts strings of differing length — the result must still be a 401."""
+    res = webhook.handler(
+        make_event({"userSub": "sub-1", "eventType": "ping"}, api_key="x"),
+        None,
+    )
+    assert res["statusCode"] == 401
+
+
 def test_webhook_requires_fields(dynamo_table: None) -> None:
     res = webhook.handler(make_event({"userSub": "sub-1"}), None)
     assert res["statusCode"] == 400
