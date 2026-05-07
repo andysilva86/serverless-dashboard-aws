@@ -1,2 +1,163 @@
 # serverless-dashboard-aws
-serverless-dashboard-aws
+
+Aplicação **100% serverless** na AWS com:
+
+- Frontend SPA em **React + Vite + TypeScript** servido por **CloudFront + S3**
+- API em **API Gateway HTTP API** + **AWS Lambda (Python 3.12)**
+- Autenticação via **Amazon Cognito User Pool** (JWT)
+- Persistência em **DynamoDB** (single-table design)
+- Fan-out de integrações sistêmicas via **EventBridge**
+- IaC com **Serverless Framework v3**
+- CI no **GitHub Actions** (lint + testes + build + validação do `serverless.yml`)
+
+A arquitetura completa está documentada em [`docs/architecture.md`](./docs/architecture.md)
+com diagrama PNG e diagramas de sequência em Mermaid.
+
+![Arquitetura](./docs/architecture-diagram.png)
+
+## Estrutura do repositório
+
+```
+.
+├── backend/                Lambdas Python + testes (pytest, moto)
+│   ├── pyproject.toml
+│   ├── src/
+│   │   ├── handlers/       Um arquivo por endpoint (auth, users, dashboard, integrations)
+│   │   └── lib/            Helpers de DynamoDB, autenticação, respostas, logging
+│   └── tests/              Testes pytest com mocks via moto
+├── frontend/               SPA React + Vite + TypeScript
+│   ├── src/
+│   │   ├── pages/          Login, Register, Dashboard
+│   │   ├── auth/           Contexto de autenticação
+│   │   ├── api/            Cliente HTTP tipado
+│   │   └── components/     Layout, PrivateRoute
+│   └── package.json
+├── infrastructure/         Serverless Framework
+│   ├── serverless.yml      Cognito + API + Lambdas + DynamoDB + S3 + CloudFront + EventBridge
+│   └── package.json        serverless + plugin de python requirements
+├── docs/
+│   ├── architecture.md     Documentação detalhada
+│   ├── architecture-diagram.py  Script para gerar o PNG (lib `diagrams`)
+│   └── architecture-diagram.png Diagrama gerado
+└── .github/workflows/ci.yml
+```
+
+## Endpoints
+
+| Método | Path | Auth | Descrição |
+|---|---|---|---|
+| POST | `/auth/register` | público | Cadastro do usuário no Cognito + perfil no DynamoDB |
+| POST | `/auth/login` | público | Devolve `idToken`/`accessToken`/`refreshToken` |
+| GET  | `/users/me` | JWT | Perfil do usuário autenticado |
+| GET  | `/dashboard/stats` | JWT | Métricas agregadas dos eventos do usuário |
+| POST | `/integrations/webhook` | `X-API-Key` | Recebe eventos de sistemas externos |
+| POST | `/integrations/dispatch` | JWT | Publica evento na EventBridge custom bus |
+
+## Pré-requisitos para deploy
+
+- Conta AWS com permissões para criar Cognito, API Gateway, Lambda, DynamoDB, S3, CloudFront e EventBridge
+- AWS CLI configurada (`aws configure`) ou credenciais via `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+- Node.js 20+
+- Python 3.12+
+- Docker (recomendado para `serverless-python-requirements`, opcional)
+
+## Setup local
+
+### Backend
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Lint + testes
+ruff check src tests
+pytest
+```
+
+### Frontend
+
+```bash
+cd frontend
+cp .env.example .env  # ajuste VITE_API_BASE_URL
+npm install
+npm run lint
+npm run typecheck
+npm run dev   # http://localhost:5173
+```
+
+### Infraestrutura
+
+```bash
+cd infrastructure
+npm install
+cp .env.example .env  # defina WEBHOOK_API_KEY
+```
+
+## Deploy completo
+
+```bash
+# 1. Backend + recursos AWS
+cd infrastructure
+npx serverless deploy --stage dev
+
+# Pegue os outputs (HttpApiUrl, UserPoolId, UserPoolClientId, FrontendBucketName, FrontendDistributionDomain)
+npx serverless info --stage dev
+
+# 2. Frontend
+cd ../frontend
+echo "VITE_API_BASE_URL=https://<HttpApiUrl-do-output>" > .env.production
+npm install
+npm run build
+
+# 3. Upload do bundle e invalidação de cache
+aws s3 sync dist/ "s3://<FrontendBucketName>/" --delete
+aws cloudfront create-invalidation \
+    --distribution-id <DistributionId> --paths "/*"
+```
+
+A SPA fica disponível em `https://<FrontendDistributionDomain>`.
+
+### Confirmar usuário criado pela tela de cadastro
+
+O Cognito User Pool é criado com `AutoVerifiedAttributes: email`, mas o e-mail
+de verificação só será enviado se você configurar SES. Para testar rapidamente,
+confirme o usuário via CLI:
+
+```bash
+aws cognito-idp admin-confirm-sign-up \
+  --user-pool-id <UserPoolId> \
+  --username <email>
+```
+
+## Testes locais do webhook
+
+```bash
+curl -X POST "<HttpApiUrl>/integrations/webhook" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $WEBHOOK_API_KEY" \
+  -d '{"userSub":"<sub>","eventType":"page_view","data":{"path":"/home"}}'
+```
+
+## Remover stack
+
+```bash
+cd infrastructure
+npx serverless remove --stage dev
+```
+
+> CloudFront pode levar 15-20 minutos para excluir. Antes de rodar `remove`, esvazie o
+> bucket de frontend (`aws s3 rm s3://<FrontendBucketName>/ --recursive`).
+
+## Decisões de arquitetura (TL;DR)
+
+- **HTTP API** ao invés de REST API — 70% mais barato e suporta JWT authorizer nativo.
+- **Single-table DynamoDB** com PK/SK + GSI1 — uma tabela atende perfis, eventos e listagens cross-user.
+- **Cognito** como IdP — sem precisar implementar hash/verificação de senha.
+- **EventBridge custom bus** para outbound — facilita evoluir para fan-out (SQS, partner HTTP, mais Lambdas) sem mudar a API.
+- **CloudFront + S3 com OAC** — bucket privado, proteção contra hotlink, cache global.
+
+## Licença
+
+MIT
